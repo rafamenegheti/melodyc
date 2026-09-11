@@ -1,0 +1,64 @@
+# ==============================================================================
+#
+#   O que NAO entra no repositorio.
+#
+#   Este projeto e CMake puro, sem Projucer: nao ha Builds/ nem
+#   JuceLibraryCode/. Tudo o que o CMake gera mora em build*/ e sai daqui
+#   inteiro -- sao centenas de megabytes de objeto e bundle que voltam a existir
+#   com dois comandos.
+#
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# O que o build gera
+#
+# `build`, `build-asan` e `build-universal` sao os nomes que o README usa. O
+# curinga pega qualquer outro que apareca -- o custo de errar aqui e um commit
+# de meio giga que ninguem consegue desfazer sem reescrever a historia.
+# ------------------------------------------------------------------------------
+build*/
+cmake-build-*/
+compile_commands.json
+CMakeUserPresets.json
+
+# Artefatos soltos, caso alguem compile fora de build/
+*.o
+*.a
+*.dylib
+*.so
+*.dll
+*.exe
+*.vst3/
+*.component/
+
+# ------------------------------------------------------------------------------
+# Ferramentas
+# ------------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ------------------------------------------------------------------------------
+# Sistema e editores
+# ------------------------------------------------------------------------------
+.DS_Store
+._*
+.vscode/
+.idea/
+.cursor/
+*.swp
+*~
+
+# ------------------------------------------------------------------------------
+# O QUE FICA, e por que:
+#
+#   data/bank.bin    606 KB, e EMBUTIDO no plugin pelo juce_add_binary_data. Sem
+#                    ele o build nao passa -- nao e artefato, e fonte.
+#   data/bank.json   2,4 MB, o banco antes de empacotar. Permite reempacotar sem
+#                    ter os 1.809 MIDIs de origem na maquina, que nao estao aqui e
+#                    nao cabem aqui.
+#
+# Se um dia bank.json incomodar, o caminho e o Git LFS -- nao ignorar, porque
+# perder ele custa a pasta inteira de MIDIs de volta.
+# ------------------------------------------------------------------------------
