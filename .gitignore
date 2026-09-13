@@ -62,3 +62,23 @@ venv/
 # Se um dia bank.json incomodar, o caminho e o Git LFS -- nao ignorar, porque
 # perder ele custa a pasta inteira de MIDIs de volta.
 # ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# O QUE FICA SO NO DISCO: a varredura do Discover MIDI.
+#
+# `sift-paths.txt` sozinho tem 547 MB -- o GitHub recusa arquivo acima de 100 MB,
+# e foi assim que isto apareceu. Mas o motivo de verdade e outro: `bank-discover`
+# e `bank-merged` guardam as melodias do Discover, que saíram do plugin por
+# conterem musicas conhecidas (ver "O que entra no banco" no README). Material
+# cortado por esse motivo nao sobe para repositorio nenhum.
+#
+# Continuam no disco porque o corte e reversivel: trocar `bank.json` de volta
+# pelo `bank-merged.json` desfaz tudo. O build nao usa nenhum deles.
+# ------------------------------------------------------------------------------
+data/sift-paths.txt
+data/sift.json
+data/bank-discover.json
+data/bank-merged.json
+data/discover-top.json
+data/discover-top.txt
+data/fatias/
