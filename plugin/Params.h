@@ -157,8 +157,19 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout makeLayout()
     for (int i = 0; i < Length::count; ++i)
         lengths.add (Length::name (i));
 
+    // OITO E O PADRAO.
+    //
+    // Quatro compassos e o trecho mais curto que se sustenta sozinho, e por isso
+    // era o padrao. Oito e uma IDEIA: tem primeira metade, volta e desfecho, que
+    // e o que a pessoa vai levar para a faixa -- e o material de oito existe
+    // inteiro no corpus, minerado, e nao e quatro colado duas vezes.
+    //
+    // O custo esta medido e aceito: o pool de oito e menor que o de quatro (938
+    // menores e 590 maiores, contra 3.428 e 2.210). Sao menos resultados
+    // distintos antes de repetir, e quem quiser o campo maior troca em um clique
+    // -- o controle esta na primeira barra, ao lado.
     layout.add (std::make_unique<AudioParameterChoice> (
-        ParameterID { pid::length, 1 }, "Compassos", lengths, Length::four));
+        ParameterID { pid::length, 1 }, "Compassos", lengths, Length::eight));
 
     StringArray sources;
     for (int i = 0; i < Source::count; ++i)

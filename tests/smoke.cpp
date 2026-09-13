@@ -112,6 +112,48 @@ private:
     std::map<int, int> open;
 };
 
+/** POE NO PROCESSADOR UMA FRASE COM NOTA NO TEMPO ZERO.
+
+    Os casos de transporte -- parar, saltar, o botao de tocar -- precisam de uma
+    nota soando nas primeiras batidas, e o plugin abre com frase SORTEADA. Com o
+    banco dos packs novos, frase que abre com pausa ficou comum: medido, 6 em 40
+    rodadas de um desses casos tinham a primeira nota na batida 1, e o caso
+    falhava sem nada estar errado no transporte.
+
+    Procurar a semente, em vez de fixar uma, e o que sobrevive a troca de banco:
+    uma semente fixa escolhe outra frase no dia em que o banco muda. */
+template <typename Condicao>
+void escolheFrase (MelodyProcessor& p, Condicao&& serve)
+{
+    for (std::uint32_t semente = 1; semente < 5000; ++semente)
+    {
+        p.regenerate (semente);
+
+        if (serve (p.livePhrase()))
+            return;
+    }
+}
+
+/** Quantas camadas tem nota antes da batida `ate`. */
+int camadasAte (const melody::Phrase& f, double ate)
+{
+    auto tem = [ate] (const melody::Voice* v, int n)
+    {
+        for (int i = 0; i < n; ++i)
+            if (v[i].pos * 0.25 < ate)
+                return 1;
+        return 0;
+    };
+
+    return tem (f.melody, f.melodyCount) + tem (f.chords, f.chordCount)
+             + tem (f.bass, f.bassCount);
+}
+
+void fraseComNotaNoTempoZero (MelodyProcessor& p)
+{
+    escolheFrase (p, [] (const melody::Phrase& f) { return camadasAte (f, 0.25) > 0; });
+}
+
 int countNoteOns (const juce::MidiBuffer& b)
 {
     int n = 0;
@@ -147,6 +189,7 @@ void testBotaoTocarNaoMente()
     MelodyProcessor p;
     p.setPlayConfigDetails (0, 2, 48000.0, 512);
     p.prepareToPlay (48000.0, 512);
+    fraseComNotaNoTempoZero (p);
 
     std::unique_ptr<juce::AudioProcessorEditor> ed (p.createEditor());
     auto* me = dynamic_cast<MelodyEditor*> (ed.get());
@@ -222,6 +265,7 @@ void testBotaoTocarNaoMente()
     check (! p.auditioning(), "clicar com o host rodando nao liga a audicao");
 
     // E AGORA O ESPACO: parar o transporte tem de dar silencio.
+    //
     const double tocando = energia (20);
 
     host.playing = false;
@@ -288,12 +332,25 @@ void testTransporteEmiteNota()
     const auto& frase = p.livePhrase();
     const int esperadas = frase.melodyCount + frase.chordCount + frase.bassCount;
 
-    // Uma volta EXATA. A 120 BPM, 16 batidas sao 8 segundos, 384.000 amostras,
-    // 750 blocos de 512 sem sobra. Com um andamento que nao divide, o ultimo
-    // bloco entra na volta seguinte e as notas do tempo zero contam duas vezes.
+    // Uma volta EXATA, e o comprimento dela VEM DA FRASE.
+    //
+    // Era 750 blocos escritos a mao -- "16 batidas, o laco de quatro compassos".
+    // No dia em que o padrao virou oito compassos, o caso passou a varrer meia
+    // volta e acusou 23 note-on de 49, como se o tocador tivesse quebrado. O
+    // numero certo nunca foi 750: e quantos blocos cabem no laco da frase que
+    // esta ali.
+    //
+    // A 120 BPM, 512 amostras sao 1/93,75 de batida, entao a divisao fecha para
+    // 16 e para 32 batidas. Com um andamento que nao divide, o ultimo bloco
+    // entraria na volta seguinte e as notas do tempo zero contariam duas vezes
+    // -- por isso o caso confere a divisao em vez de confiar nela.
     host.bpm = 120.0;
-    const double beatsPerBlock = 512.0 * host.bpm / (60.0 * 48000.0);
-    const int blocos = 750;    // 16 batidas exatas, o laco de quatro compassos
+    const double blocosExatos = frase.loopBeats() * 60.0 * 48000.0
+                                  / (host.bpm * 512.0);
+    const int blocos = (int) std::llround (blocosExatos);
+
+    check (std::abs (blocosExatos - (double) blocos) < 1.0e-9,
+           "a volta cabe num numero inteiro de blocos");
 
     int total = 0;
 
@@ -308,13 +365,113 @@ void testTransporteEmiteNota()
         host.beat = (double) ((i + 1) * 512) * host.bpm / (60.0 * 48000.0);
     }
 
-    juce::ignoreUnused (beatsPerBlock);
-
-    std::printf ("      %d note-on em uma volta, frase tem %d notas\n", total, esperadas);
+    std::printf ("      %d note-on numa volta de %.0f batidas, frase tem %d notas\n",
+                 total, frase.loopBeats(), esperadas);
 
     check (total > 0, "o transporte do host faz o plugin emitir nota");
 
     check (total == esperadas, "cada nota da frase soa exatamente uma vez por volta");
+}
+
+/** O LACO DO HOST MENOR QUE A FRASE NAO PODE PRENDER A FRASE NO INICIO.
+
+    Foi o defeito relatado no FL Studio: em modo PAT, com um padrao de bateria
+    de um compasso, o plugin tocava so o primeiro compasso da frase de oito e
+    voltava. O FL leva a posicao do transporte de 0 a 4 batidas e devolve a 0 a
+    cada volta do padrao, e o plugin lia a posicao crua do host -- entao lia
+    sempre as batidas 0 a 4 de uma frase de 32.
+
+    O caso imita exatamente isso: oito voltas de um compasso, que somam a frase
+    inteira. Cada nota da frase tem de soar uma vez, e so uma. */
+void testLacoCurtoDoHost (double lacoHost)
+{
+    MelodyProcessor p;
+    p.setPlayConfigDetails (0, 2, 48000.0, 512);
+    p.prepareToPlay (48000.0, 512);
+
+    if (auto* prm = p.apvts.getParameter (pid::length))
+        prm->setValueNotifyingHost (prm->convertTo0to1 ((float) Length::eight));
+
+    // Semente fixa: o plugin abre com frase sorteada, e um caso que falha com
+    // uma frase diferente a cada execucao nao da para depurar.
+    p.regenerate (424242u);
+
+    FakeHost host;
+    host.bpm = 120.0;
+    p.setPlayHead (&host);
+
+    const auto& frase = p.livePhrase();
+    const int esperadas = frase.melodyCount + frase.chordCount + frase.bassCount;
+
+    // A 120 BPM, 4 batidas sao 2 s = 96.000 amostras = 187,5 blocos de 512.
+    // Blocos inteiros nao fecham um compasso de 4 batidas, e isso e de
+    // proposito: o FL
+    // tambem nao alinha o fim do padrao com o fim do bloco, e a volta cai no
+    // meio de um -- que e o caso dificil.
+    const double batidasPorBloco = 512.0 * host.bpm / (60.0 * 48000.0);
+
+    // Numero EXATO de blocos para uma frase: um bloco a mais comecaria a volta
+    // seguinte e contaria as notas do tempo zero duas vezes.
+    const int blocos = (int) std::llround (frase.loopBeats() / batidasPorBloco);
+
+    // O QUE SE COMPARA SAO AS NOTAS, e nao o compasso do transporte.
+    //
+    // A primeira versao deste caso media "ate que compasso chegou" pela posicao
+    // do transporte -- que chega ao oitavo sempre, com ou sem defeito, e o caso
+    // passava a toa. O que prova que a frase inteira tocou e o conjunto de
+    // alturas que saiu bater com o conjunto de alturas da frase.
+    //
+    // A CONTAGEM PARA NO PENULTIMO BLOCO. O ultimo termina em 32 mais um erro
+    // de arredondamento e pega o tempo zero da volta SEGUINTE -- que no uso
+    // continuo sai uma vez so (o bloco depois dele nao repete). Medido: todas as
+    // notas "a mais" da primeira tentativa eram essas, no bloco 1499. Parando um
+    // bloco antes, a janela termina em 31,98, e nenhuma nota da frase fica perto
+    // dessa borda: as notas caem em multiplos de 1/4 de batida.
+    const double fimDaContagem = (blocos - 1) * batidasPorBloco;
+
+    std::vector<int> saiu, frasePitches;
+
+    auto dentro = [fimDaContagem] (const melody::Voice* v, int n, std::vector<int>& out)
+    {
+        for (int i = 0; i < n; ++i)
+            if (v[i].pos * 0.25 < fimDaContagem)
+                out.push_back (v[i].pitch);
+    };
+
+    dentro (frase.melody, frase.melodyCount, frasePitches);
+    dentro (frase.chords, frase.chordCount, frasePitches);
+    dentro (frase.bass,   frase.bassCount,  frasePitches);
+
+    double transporte = 0.0;
+
+    for (int i = 0; i < blocos; ++i)
+    {
+        host.beat = std::fmod (transporte, lacoHost);
+
+        juce::AudioBuffer<float> buf (2, 512);
+        juce::MidiBuffer midi;
+        p.processBlock (buf, midi);
+
+        if (i < blocos - 1)
+            for (const auto ev : midi)
+                if (ev.getMessage().isNoteOn())
+                    saiu.push_back (ev.getMessage().getNoteNumber());
+
+        transporte += batidasPorBloco;
+    }
+
+    std::sort (saiu.begin(), saiu.end());
+    std::sort (frasePitches.begin(), frasePitches.end());
+
+    std::printf ("      laco do host de %.0f batidas, frase de %.0f: %d note-on de %d\n",
+                 lacoHost, frase.loopBeats(), (int) saiu.size(), (int) frasePitches.size());
+
+    juce::ignoreUnused (esperadas);
+
+    check (saiu.size() == frasePitches.size(),
+           "com o laco do host menor que a frase, cada nota soa uma vez");
+    check (saiu == frasePitches,
+           "e as notas que saem sao as da frase inteira, e nao o comeco repetido");
 }
 
 /** Oito compassos dao a volta em 32 batidas, e nao em 16.
@@ -508,8 +665,15 @@ void testDeterminismo()
     projeto que o usuario ja gravou. */
 void testEstadoLevaASemente()
 {
+    // A SEMENTE DO CASO E PAR DE PROPOSITO.
+    //
+    // Era 987654321 -- impar --, e por isso o caso passava enquanto
+    // `setStateInformation` fazia `seed | 1u`. Com semente par, o OR devolvia a
+    // vizinha: salvar um projeto e reabrir dava OUTRA melodia por cima da
+    // musica ja escrita, que e exatamente o que a semente gravada existe para
+    // impedir. Metade das sementes caia nisso, e nenhum caso via.
     MelodyProcessor a;
-    a.regenerate (987654321u);
+    a.regenerate (987654320u);
 
     if (auto* prm = a.apvts.getParameter (pid::key))
         prm->setValueNotifyingHost (prm->convertTo0to1 (3.0f));
@@ -763,6 +927,7 @@ void testPararNaoPrendeNota()
     MelodyProcessor p;
     p.setPlayConfigDetails (0, 2, 48000.0, 512);
     p.prepareToPlay (48000.0, 512);
+    fraseComNotaNoTempoZero (p);
 
     FakeHost host;
     p.setPlayHead (&host);
@@ -871,6 +1036,7 @@ void testSaltoNaoPrendeNota()
     MelodyProcessor p;
     p.setPlayConfigDetails (0, 2, 48000.0, 512);
     p.prepareToPlay (48000.0, 512);
+    fraseComNotaNoTempoZero (p);
 
     FakeHost host;
     p.setPlayHead (&host);
@@ -1030,6 +1196,11 @@ void testCanalDeSaida()
         p.setPlayConfigDetails (0, 2, 48000.0, 512);
         p.prepareToPlay (48000.0, 512);
 
+        // SEPARADO so pode mostrar mais de um canal se a frase tiver mais de uma
+        // camada tocando na janela. Frase so de melodia existe no banco, e
+        // sorteada ela fazia o caso falhar de vez em quando (1 em ~50 rodadas).
+        escolheFrase (p, [] (const melody::Phrase& f) { return camadasAte (f, 16.0) >= 2; });
+
         if (auto* prm = p.apvts.getParameter (pid::routing))
             prm->setValueNotifyingHost (prm->convertTo0to1 ((float) modo));
 
@@ -1142,14 +1313,14 @@ void testSlotDeInstrumento()
     check (instrumentos > 0, "algum plugin e reconhecido como instrumento");
     check (instrumentos < achados.size(), "e algum e recusado -- o filtro filtra");
 
-    // E o proprio melody, que e instrumento, tem de estar entre eles.
+    // E o proprio melodyc, que e instrumento, tem de estar entre eles.
     bool achouMelody = false;
 
     for (const auto& f : achados)
-        if (f.instrument && f.name.equalsIgnoreCase ("melody"))
+        if (f.instrument && f.name.equalsIgnoreCase ("melodyc"))
             achouMelody = true;
 
-    check (achouMelody, "o melody aparece como instrumento");
+    check (achouMelody, "o melodyc aparece como instrumento");
 }
 
 void testEditor()
@@ -1187,6 +1358,72 @@ void testEditor()
     check (p.auditioning(), "TOCAR liga a audicao");
     me->clickForTest ("tocar");
     check (! p.auditioning(), "e apertar de novo desliga");
+
+    // NADA SE ENCAVALA EM NENHUM TAMANHO.
+    //
+    // A janela deixou de ter tamanho fixo, e layout conferido num tamanho so e
+    // layout que ninguem olhou: no primeiro minimo que eu escolhi (900), o
+    // SOM INTERNO encostava no MENOR. Isso apareceu numa captura, por sorte.
+    // Aqui vira caso: os filhos diretos visiveis nao podem se sobrepor, do
+    // menor ao maior tamanho permitido.
+    //
+    // Compara DIRETOS e visiveis de proposito. O convidado (guestView) fica
+    // escondido e ocupa o roll inteiro; incluir ele acusaria colisao com tudo.
+    auto colisoes = [me] ()
+    {
+        juce::Array<juce::Rectangle<int>> caixas;
+
+        for (int i = 0; i < me->getNumChildComponents(); ++i)
+        {
+            auto* c = me->getChildComponent (i);
+
+            if (c != nullptr && c->isVisible() && ! c->getBounds().isEmpty())
+                caixas.add (c->getBounds());
+        }
+
+        int n = 0;
+
+        for (int a = 0; a < caixas.size(); ++a)
+            for (int b = a + 1; b < caixas.size(); ++b)
+                if (caixas[a].intersects (caixas[b]))
+                    ++n;
+
+        return n;
+    };
+
+    struct Tam { int w, h; const char* nome; };
+
+    for (auto t : { Tam { 1000, 500, "no minimo" },
+                    Tam { 1000, 600, "de fabrica" },
+                    Tam { 1500, 950, "esticada" },
+                    Tam { 2400, 1600, "no maximo" } })
+    {
+        ed->setSize (t.w, t.h);
+
+        check (ed->getWidth() == t.w && ed->getHeight() == t.h,
+               juce::String ("a janela aceita o tamanho ") + t.nome);
+
+        const int n = colisoes();
+
+        if (n > 0)
+            std::printf ("      %d sobreposicoes em %dx%d\n", n, t.w, t.h);
+
+        check (n == 0, juce::String ("nada se encavala ") + t.nome);
+    }
+
+    // E O MINIMO E RESPEITADO NO CAMINHO QUE O HOST USA.
+    //
+    // `setSize` nao passa pelo limitador -- e por isso que o construtor pode
+    // abrir em 1000x600 sem briga. Quem e limitado e `setBoundsConstrained`,
+    // que e por onde a DAW e o canto de arrastar mexem no tamanho. Testar com
+    // `setSize` daria um caso que falha sem nada estar errado.
+    ed->setBoundsConstrained (ed->getBounds().withSize (700, 300));
+    check (ed->getWidth() >= 1000 && ed->getHeight() >= 500,
+           "o limitador recusa ficar menor que o minimo");
+
+    ed->setBoundsConstrained (ed->getBounds().withSize (5000, 4000));
+    check (ed->getWidth() <= 2400 && ed->getHeight() <= 1600,
+           "e recusa passar do maximo");
 }
 
 //==============================================================================
@@ -1520,7 +1757,7 @@ int loadInstalled()
     int achados = 0;
 
     for (const auto& pasta : pastas)
-        for (const auto& nome : { "melody", "melody FX" })
+        for (const auto& nome : { "melodyc", "melodyc FX" })
         {
             for (int f = 0; f < formats.getNumFormats(); ++f)
             {
@@ -1869,9 +2106,17 @@ int takeShot (const juce::String& path, const juce::String& guest)
         ? juce::StringArray::fromTokens (guest.substring (5), ",", "")
         : juce::StringArray();
 
-    if (guest == "8" || (tokensAnim.size() > 3 && tokensAnim[3].trim() == "8"))
+    // O quarto campo aceita "4" E "8". Aceitar so o "8" bastava enquanto quatro
+    // era o padrao; com oito no padrao, a captura de quatro compassos -- que a
+    // pagina de vendas usa -- deixou de ter como ser pedida.
+    const juce::String comprimento =
+        tokensAnim.size() > 3 ? tokensAnim[3].trim()
+                              : (guest == "8" ? juce::String ("8") : juce::String());
+
+    if (comprimento.isNotEmpty())
         if (auto* prm = p.apvts.getParameter (pid::length))
-            prm->setValueNotifyingHost (prm->convertTo0to1 ((float) Length::eight));
+            prm->setValueNotifyingHost (prm->convertTo0to1 (
+                (float) (comprimento == "4" ? Length::four : Length::eight)));
 
     // Com um instrumento carregado, a captura mostra o editor DELE embutido --
     // que e a unica forma de conferir que o encaixe coube e nao ficou cortado.
@@ -1893,8 +2138,18 @@ int takeShot (const juce::String& path, const juce::String& guest)
 
     if (auto* me = dynamic_cast<MelodyEditor*> (ed.get()))
     {
+        // Quinto campo: "1500x950". Existe porque a janela deixou de ter tamanho
+        // fixo -- e layout visto num tamanho so e layout que ninguem olhou.
+        if (tokensAnim.size() > 4 && tokensAnim[4].containsChar ('x'))
+        {
+            const auto wh = juce::StringArray::fromTokens (tokensAnim[4].trim(), "x", "");
+
+            if (wh.size() == 2)
+                ed->setSize (wh[0].getIntValue(), wh[1].getIntValue());
+        }
+
         // A semente vem ANTES do demoPhrase, porque e ela que decide o que sera
-        // gerado. "anim=<0..1>[,<batida>[,<semente>[,8]]]".
+        // gerado. "anim=<0..1>[,<batida>[,<semente>[,4|8[,LxA]]]]".
         me->demoPhrase (tokensAnim.size() > 2
                           ? (std::uint32_t) tokensAnim[2].getLargeIntValue()
                           : 20250908u);
@@ -1984,6 +2239,12 @@ int main (int argc, char* argv[])
     std::printf ("  abre sorteado\n");             testAbreSorteado();
     std::printf ("  o botao de tocar nao mente\n"); testBotaoTocarNaoMente();
     std::printf ("  oito compassos\n");            testOitoCompassos();
+    // Os tres tamanhos de padrao que o FL produz de verdade: 1, 2 e 4 compassos
+    // de bateria, todos menores que a frase de oito.
+    std::printf ("  laco curto do host\n");
+    testLacoCurtoDoHost (4.0);
+    testLacoCurtoDoHost (8.0);
+    testLacoCurtoDoHost (16.0);
     std::printf ("  parado nao emite\n");          testParadoNaoEmite();
     std::printf ("  som interno desliga\n");       testSomInternoDesliga();
     std::printf ("  determinismo\n");              testDeterminismo();

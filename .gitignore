@@ -53,10 +53,10 @@ venv/
 # ------------------------------------------------------------------------------
 # O QUE FICA, e por que:
 #
-#   data/bank.bin    606 KB, e EMBUTIDO no plugin pelo juce_add_binary_data. Sem
+#   data/bank.bin    1,0 MB, e EMBUTIDO no plugin pelo juce_add_binary_data. Sem
 #                    ele o build nao passa -- nao e artefato, e fonte.
 #   data/bank.json   2,4 MB, o banco antes de empacotar. Permite reempacotar sem
-#                    ter os 1.809 MIDIs de origem na maquina, que nao estao aqui e
+#                    ter os 25 mil MIDIs de origem na maquina, que nao estao aqui e
 #                    nao cabem aqui.
 #
 # Se um dia bank.json incomodar, o caminho e o Git LFS -- nao ignorar, porque

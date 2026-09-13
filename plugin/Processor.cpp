@@ -62,6 +62,8 @@ void MelodyProcessor::prepareToPlay (double rate, int samplesPerBlock)
 
     internalBeat = 0.0;
     lastEnd = -1.0;
+    lastHostEnd = -1.0;
+    phraseOffset = 0.0;
     wasRunning = false;
     position.store (0.0, std::memory_order_relaxed);
 }
@@ -405,8 +407,55 @@ void MelodyProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     {
         const double beatsPerBlock = numSamples * hostBpm / (60.0 * sampleRate);
 
-        from = hostBeat;
-        to = hostBeat + beatsPerBlock;
+        // O LACO CURTO DO HOST NAO REINICIA A FRASE.
+        //
+        // Voltar para tras menos que o comprimento da frase e o padrao do FL
+        // dando a volta: a frase continua, somando a volta ao deslocamento.
+        // Voltar a frase inteira ou mais e um laco que ja contem a frase, e ai
+        // seguir o host e o certo -- o deslocamento fica, a posicao salta, e o
+        // salto pede silencio mais abaixo como sempre pediu.
+        //
+        // O custo, aceito: clicar na regua para voltar um trecho curto com o
+        // transporte rodando nao volta a frase junto. Ela realinha ao parar e
+        // dar play de novo, que zera o deslocamento.
+        const bool seguiaHost = lastHostEnd >= 0.0;
+
+        if (! seguiaHost)
+        {
+            phraseOffset = 0.0;
+        }
+        else
+        {
+            const double volta = lastHostEnd - hostBeat;
+
+            if (volta > beatsPerBlock + 1.0e-9 && volta < p.loopBeats() - 1.0e-6)
+                phraseOffset += volta;
+        }
+
+        lastHostEnd = hostBeat + beatsPerBlock;
+
+        from = hostBeat + phraseOffset;
+        to = from + beatsPerBlock;
+
+        // O BLOCO EMENDA NO FIM DO ANTERIOR QUANDO A DIFERENCA E SO
+        // ARREDONDAMENTO.
+        //
+        // `from` recalculado do host e o `to` do bloco anterior deveriam ser o
+        // mesmo numero, e costumam diferir por um ou dois ulps -- mais ainda
+        // depois de somar voltas ao deslocamento. Quando essa costura cai num
+        // tempo forte (a 120 BPM com blocos de 512 ela cai em TODO tempo forte),
+        // a nota do tempo forte fica dos dois lados e sai duas vezes, ou de
+        // nenhum e nao sai.
+        //
+        // A TOLERANCIA E DE ARREDONDAMENTO, e nao de um bloco. A primeira versao
+        // usou um bloco inteiro e engoliu nota: um host que repete a mesma
+        // posicao em dois blocos (pre-roll, ou o inicio do transporte) tinha o
+        // `from` colado no fim anterior enquanto o `to`, preso ao host, ficava
+        // no mesmo lugar -- janela vazia, e a nota do tempo zero sumia. O caso
+        // "com o host rodando sai som" pegou isso na hora.
+        if (seguiaHost && lastEnd >= 0.0 && std::abs (from - lastEnd) <= 1.0e-6)
+            from = lastEnd;
+
         running = true;
 
         bpm.store (hostBpm, std::memory_order_relaxed);
@@ -424,6 +473,10 @@ void MelodyProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
     else if (internalOn.load (std::memory_order_acquire))
     {
+        // Fora do host o relogio da frase recomeca do zero na proxima vez que
+        // o host rodar -- senao um deslocamento velho sobreviveria a um stop.
+        lastHostEnd = -1.0;
+
         const double useBpm = p.bpm > 0 ? (double) p.bpm : 140.0;
         const double beatsPerBlock = numSamples * useBpm / (60.0 * sampleRate);
 
@@ -504,6 +557,9 @@ void MelodyProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     wasRunning = running;
     lastEnd = running ? to : -1.0;
 
+    if (! running)
+        lastHostEnd = -1.0;
+
     moving.store (running, std::memory_order_relaxed);
     fromHost.store (hostPlaying && hostBeat >= 0.0 && hostBpm > 0.0,
                     std::memory_order_relaxed);
@@ -562,6 +618,12 @@ void MelodyProcessor::getStateInformation (juce::MemoryBlock& dest)
     // primeira.
     tree.setProperty ("seed", (juce::int64) seed, nullptr);
 
+    if (editorW > 0 && editorH > 0)
+    {
+        tree.setProperty ("editorW", editorW, nullptr);
+        tree.setProperty ("editorH", editorH, nullptr);
+    }
+
     // O instrumento carregado e o estado DELE viajam junto com o projeto.
     juce::MemoryBlock rackBlob;
     rack.getState (rackBlob);
@@ -585,8 +647,22 @@ void MelodyProcessor::setStateInformation (const void* data, int size)
     if (! tree.isValid())
         return;
 
+    // A SEMENTE VOLTA COMO FOI GRAVADA.
+    //
+    // Era `... | 1u`, herdado de quando o Rng precisava de semente impar. O Rng
+    // mistura internamente ha muito tempo e nao precisa mais -- mas o OR ficou,
+    // e transformava toda semente PAR na vizinha impar. Efeito: metade dos
+    // projetos salvos reabria com outra melodia, por cima da musica ja escrita.
+    // Era invisivel porque o unico caso que cobria isto sorteava 987654321, que
+    // e impar.
     if (tree.hasProperty ("seed"))
-        seed = (std::uint32_t) (juce::int64) tree.getProperty ("seed") | 1u;
+        seed = (std::uint32_t) (juce::int64) tree.getProperty ("seed");
+
+    if (tree.hasProperty ("editorW") && tree.hasProperty ("editorH"))
+    {
+        editorW = (int) tree.getProperty ("editorW");
+        editorH = (int) tree.getProperty ("editorH");
+    }
 
     if (tree.hasProperty ("rack"))
     {

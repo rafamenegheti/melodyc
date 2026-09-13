@@ -82,6 +82,46 @@ linha inteira e a lateral virava um código de barras de entalhes disputando
 atenção com as notas. Valendo menos da metade de uma linha, ela lê como emenda
 entre dois trechos de teclado — que é o que ela é.
 
+### A janela estica
+
+Era **1000×600 fixo**. O roll é o miolo do plugin e estava preso numa caixa de
+460 px de altura; a nota, que hoje tem 18, vai a 26 numa janela esticada. O
+`resized()` já tirava as barras de cima e de baixo com altura fixa e dava o resto
+ao roll, então esticar não custou layout nenhum — faltava destravar.
+
+**O mínimo em largura é o próprio tamanho de fábrica**, e isso não é preguiça: a
+barra de cima soma 954 px de controle mais 40 de margem. Em 900 o `SOM INTERNO`
+encostava no `MENOR` — visto numa captura, não deduzido. A janela só cresce.
+
+**O piso de linhas do roll acompanha a altura.** Era 20 fixo, herdado de quando a
+janela tinha tamanho único; numa janela esticada isso dava nota de 40 px, que
+deixa de ser piano roll e vira gráfico de barras. Espaço a mais tem de virar
+contexto, não nota mais gorda.
+
+**O tamanho viaja com o projeto**, no estado do processador e não no editor — o
+editor é destruído toda vez que a janela fecha na DAW. E é lido *antes* de ligar
+o redimensionamento: `setResizeLimits` chama `setBoundsConstrained` na hora, o
+editor recém-construído tem 0×0, sobe para o mínimo e dispara o `resized()` que
+grava o tamanho. Lendo depois, a janela abria sempre no mínimo, destruindo o
+tamanho salvo antes de alguém ver.
+
+### O GERAR é um momento
+
+É o botão que a pessoa aperta vinte vezes seguidas até uma frase pegar, e a
+resposta era só o fade de 420 ms das notas. Agora são dois sinais:
+
+- **Uma varredura de luz** corre pelo roll *junto* com a frente de chegada — não
+  no tempo bruto. As notas começam a nascer em `0,55 · pos/steps`, então a frente
+  está em `chegada / 0,55`. Fora de sincronia ela viraria um segundo efeito
+  acontecendo por cima, em vez do mesmo.
+- **Um pulso no botão**, de 260 ms: o preenchimento clareia e um aro fecha de
+  fora para dentro. A primeira versão desenhava anéis com `b.expanded(...)` e não
+  aparecia nada — o JUCE recorta o desenho nos limites do componente, e o anel
+  inteiro caía fora.
+
+Os dois são gradiente sobre retângulo, como o halo e o rastro. `DropShadow` aqui
+rasterizaria uma imagem borrada por quadro, na tela inteira.
+
 **O chassi é cinza dessaturado e o roll é mais escuro que ele.** É a hierarquia
 do Logic, e ela tem função: o roll afundado separa conteúdo de controle sem
 precisar de moldura, e as cores das notas mantêm o contraste que perderiam sobre
@@ -210,6 +250,24 @@ cmake --build ~/projetos/melody/build -j8
 > VST3 e o AU vão para `~/Library/Audio/Plug-Ins/` a cada compilação. Se um host
 > insistir em mostrar versão velha, é cache de scan — não é o build.
 
+> **Compile sem `--target`.** `--target melody_AU` compila só o Audio Unit e
+> deixa o VST3 como estava, sem erro nenhum: o build passa, os testes passam, e o
+> plugin na DAW continua o antigo. Foi assim que um VST3 de um dia antes ficou
+> mostrando um banco que já não existia enquanto tudo indicava que estava em dia.
+> Se precisar de um alvo só, `melody_All` cobre os dois formatos — e a prova de
+> que o binário instalado é o novo não é o log do build, é ler o banco de dentro
+> dele:
+>
+> ```bash
+> python3 - <<'EOF'
+> import struct, pathlib
+> for p in ["~/Library/Audio/Plug-Ins/Components/melodyc.component/Contents/MacOS/melodyc",
+>           "~/Library/Audio/Plug-Ins/VST3/melodyc.vst3/Contents/MacOS/melodyc"]:
+>     b = pathlib.Path(p).expanduser().read_bytes(); i = b.find(b"MFB2")
+>     print(struct.unpack_from("<I", b, i + 4)[0], "trechos", p)
+> EOF
+> ```
+
 Universal para distribuir: `-DMELODY_UNIVERSAL=ON`.
 
 ## O instrumento mora dentro
@@ -272,7 +330,7 @@ de máquina — mas a conta só fecha com um instrumento real.
 | | formato | onde entra | som |
 |---|---|---|---|
 | **melody** | VST3 + AU (`aumu`) | uma faixa, com o instrumento dentro | slot de instrumento, ou som interno |
-| **melody FX** | só AU (`aumi`) | slot de MIDI FX, antes do instrumento | nenhum — quem toca é o instrumento da faixa |
+| **melodyc FX** | só AU (`aumi`) | slot de MIDI FX, antes do instrumento | nenhum — quem toca é o instrumento da faixa |
 
 Com o slot funcionando, a versão FX virou o caminho secundário: ela existe para
 quem prefere a cadeia do Logic à hospedagem. Em qualquer outra DAW, use o
@@ -282,8 +340,8 @@ quem prefere a cadeia do Logic à hospedagem. Em qualquer outra DAW, use o
 host de verdade e mostra o que cada formato virou:
 
 ```
-VST3       melody FX  ->  categoria "Fx", 0 entradas, 0 saídas, efeito midi NÃO
-AudioUnit  melody FX  ->  categoria "MidiEffects",              efeito midi SIM
+VST3       melodyc FX  ->  categoria "Fx", 0 entradas, 0 saídas, efeito midi NÃO
+AudioUnit  melodyc FX  ->  categoria "MidiEffects",              efeito midi SIM
 ```
 
 O AU tem o tipo `aumi`, que é um conceito real de host. O VST3 não tem
@@ -315,7 +373,54 @@ projeto rodando o botão não pode parar nada, então ele diz isso em vez de men
 O rótulo é escrito num lugar só, derivado do estado. Escrever no clique e no
 timer deixava os dois discordarem, que era a outra metade do problema.
 
+## O laço do host pode ser menor que a frase
+
+No **modo PAT do FL Studio**, o padrão dura o comprimento do próprio conteúdo —
+um compasso de bateria, por exemplo — e o FL devolve a posição da música para
+zero a cada volta. Isso é o FL funcionando como deve. O plugin lia a posição crua
+do host e tomava o resto pelo tamanho da frase: com o host voltando a cada 4
+batidas, lia sempre as batidas 0–4 de uma frase de 32. Tocava o primeiro compasso
+para sempre.
+
+Agora a frase tem um **deslocamento** próprio. Quando o host volta para trás
+**menos que o comprimento da frase**, é um laço de padrão: a volta é somada ao
+deslocamento e a frase segue em frente. Voltar a frase inteira ou mais é um laço
+que já contém a frase, e aí o plugin segue o host como sempre fez. Parar e dar
+play zera o deslocamento.
+
+O custo, aceito: clicar na régua para voltar um trecho curto com o transporte
+rodando não volta a frase junto — ela realinha no próximo play.
+
+**A emenda entre blocos tem tolerância de arredondamento, e não de um bloco.** O
+início recalculado do host e o fim do bloco anterior diferem por ulps, e quando
+essa costura cai num tempo forte a nota sai duas vezes ou nenhuma. A primeira
+versão da emenda usava um bloco inteiro de tolerância e engoliu nota: um host que
+repete a mesma posição em dois blocos tinha o início colado no fim anterior
+enquanto o fim, preso ao host, ficava no lugar — janela vazia.
+
+O caso `laco curto do host` roda padrões de 1, 2 e 4 compassos contra a frase de
+8 e confere que **cada nota sai uma vez, e são as notas da frase inteira**. Ele
+conta até o penúltimo bloco de propósito: o último termina em 32 mais um erro de
+arredondamento e pega o tempo zero da volta seguinte — que no uso contínuo sai uma
+vez só, mas no teste pareceria nota a mais.
+
+### Casos de transporte escolhem a frase
+
+O plugin abre com frase sorteada, e com o banco dos packs novos ficou comum frase
+que abre com pausa ou tem uma camada só. Três casos de transporte falhavam de vez
+em quando sem nada errado no transporte — medido, 6 em 40 rodadas de um deles
+tinham a primeira nota na batida 1. Esses casos agora procuram uma semente cuja
+frase serve (`escolheFrase`), em vez de fixar uma: semente fixa escolhe outra
+frase no dia em que o banco muda. A suíte rodou 400 vezes seguidas sem falha.
+
 ## Quatro ou oito compassos
+
+**Oito é o padrão.** Quatro compassos é o trecho mais curto que se sustenta
+sozinho; oito é uma *ideia*, com primeira metade, volta e desfecho — que é o que
+a pessoa vai levar para a faixa. O custo está medido e aceito: o pool de oito é
+menor (938 menores e 590 maiores, contra 3.428 e 2.210), então são menos
+resultados distintos antes de repetir. Quem quiser o campo maior troca em um
+clique, no controle ao lado.
 
 O interruptor `4 COMPASSOS / 8 COMPASSOS` troca de banco, e **não** cola dois
 trechos de quatro. Colar seria inventar a forma da frase por cima de material
@@ -332,7 +437,7 @@ de medição:
 | oito que é quatro repetido | 624 | a segunda metade é cópia exata da primeira em todas as camadas — o banco de quatro já tem esse material, do mesmo arquivo |
 | oito com metade vazia | 370 | menos de três notas depois do compasso 4: são quatro compassos com cauda |
 
-Sobram **801 trechos de oito** contra 3.274 de quatro. A comparação ignora a
+No banco de hoje sobram **1.528 trechos de oito** contra 5.638 de quatro. A comparação ignora a
 velocity de propósito: quatro compassos escritos duas vezes com a dinâmica um
 pouco diferente ainda são quatro compassos escritos duas vezes — com a velocity
 na conta, 126 em 800 passavam.
@@ -410,7 +515,7 @@ altura — conta pura, sem estado (`heldAt`, em [core/Player.h](core/Player.h)).
 | `Rack` (em `plugin/`) | o slot que hospeda o instrumento do usuário | sim, é o que ele faz |
 | `melody` | o plugin como instrumento: VST3 + AU | sim |
 | `melody_fx` | o mesmo, como efeito MIDI (AU) | sim |
-| `melody_data` | os 606 KB do banco, embutidos no binário | — |
+| `melody_data` | os 1,0 MB do banco, embutidos no binário | — |
 | `melody_tests` | console que prova o core | não |
 | `melody_smoke` | o processador real, sem host | sim |
 
@@ -459,12 +564,20 @@ Conferir interface por descrição não funciona, e conferir melodia menos ainda
 O `--render` passa pelo caminho de verdade — gerador, tocador e sintetizador, os
 mesmos que o plugin usa.
 
-O terceiro argumento do `--shot` é `anim=<0..1>[,<batida>[,<semente>[,8]]]`:
+O terceiro argumento do `--shot` é
+`anim=<0..1>[,<batida>[,<semente>[,4|8[,LxA]]]]`:
 congela a animação de chegada, congela o cursor, escolhe a frase e o comprimento.
+O último campo aceita `4` e `8` — aceitar só o `8` bastava enquanto quatro era o
+padrão; com oito no padrão, a captura de quatro compassos deixou de ter como ser
+pedida.
 
 ```bash
-melody_smoke --shot /tmp/oito.png "anim=1.0,12.5,7,8"
+melody_smoke --shot /tmp/oito.png   "anim=1.0,12.5,7,8"
+melody_smoke --shot /tmp/grande.png "anim=1.0,12.5,7,8,1500x950"
 ```
+
+O último campo veio junto com a janela redimensionável: layout conferido num
+tamanho só é layout que ninguém olhou.
 
 A semente existe porque conferir um layout em UMA frase não prova nada — foi
 exatamente assim que a hipótese do baixo passou por boa.
@@ -487,20 +600,28 @@ como efeito MIDI. Existe porque erro de host não diz de quem é a culpa, e as d
 respostas possíveis — bundle quebrado, ou host recusando bundle válido — têm
 consertos opostos.
 
-## Uma origem só, e por quê
+## O que entra no banco, e o que não entra
 
-O banco tem **4.075 trechos de 1.809 arquivos**, todos de kits de MIDI
-comerciais — Wavsupply e Cymatics são 90% deles. Já teve 51.004, com 46.929
-vindos de uma varredura do Discover MIDI (6,74 milhões de arquivos). Esse pedaço
-foi **cortado**, e o motivo não é técnico.
+O banco tem **7.166 frases**, de duas procedências que entraram por caminhos
+diferentes:
+
+| origem | arquivos | minerados | **únicos** | do sorteio |
+|---|---|---|---|---|
+| kits comerciais de trap | 1.809 | 4.075 | **3.493** | 69,8% |
+| packs de MIDI gratuitos | 23.255 | 8.278 | **3.673** | 30,2% |
+
+Já teve 51.004, com 46.929 vindos de uma varredura do Discover MIDI (6,74
+milhões de arquivos). Esse pedaço foi **cortado**, e o motivo não é técnico.
+
+### Por que o Discover saiu
 
 **Melodias de músicas conhecidas estavam lá dentro.** Um acervo de MIDI raspado
 da web é, por natureza, transcrição de música lançada — é disso que as pessoas
-sobem arquivo. A medição confirma, e separa os dois corpora de forma limpa:
+sobem arquivo.
 
-Assinei cada melodia por intervalos e ritmo (ignora tom e oitava, então duas
-transcrições da mesma música batem) e contei em quantos arquivos distintos cada
-assinatura aparece:
+A medição separa os dois casos de forma limpa. Assinei cada melodia por
+intervalos e ritmo (ignora tom e oitava, então duas transcrições da mesma música
+batem) e contei em quantos arquivos distintos cada assinatura aparece:
 
 | corpus | assinaturas em 3+ arquivos |
 |---|---|
@@ -511,7 +632,7 @@ Zero contra 615. Loop original escrito para produção aparece uma vez; melodia
 conhecida aparece muitas, porque muita gente transcreveu. A campeã estava em
 **630 arquivos diferentes**.
 
-Dava para filtrar as repetidas — são 8,4% do Discover — e o filtro foi escrito e
+Dava para filtrar as repetidas — 8,4% do Discover — e o filtro foi escrito e
 medido. Ele não foi usado porque resolve o pedaço errado do problema: pega quem
 foi transcrito várias vezes *naquela raspagem*, e não diz nada sobre as 34.872
 assinaturas que aparecem uma vez. Nenhum filtro automático certifica que uma
@@ -519,29 +640,71 @@ melodia não é de alguém.
 
 O que decidiu foi o contexto: enquanto era uso pessoal, o risco era do autor.
 Vendendo o plugin, a melodia reconhecível sai na faixa de um comprador que não
-tem como saber. Não é um risco para transferir sem avisar.
+tem como saber.
 
-### O corte não custou o que o número sugere
+### O mesmo teste não serve para pack
 
-| | antes (51.004) | agora (4.075) |
-|---|---|---|
-| frases com acordes | 89,5% | **94,8%** |
-| MIXADO recombina | — | **97,3%**, encaixe médio 88% |
-| `bank.bin` | 9,9 MB | 606 KB |
+Rodado no material novo, o teste acusa 69% de assinaturas repetidas — e a
+conclusão certa é que **o teste não se transfere**. Os campeões são
+`Db - I V I IV.mid`, `Eb - IV vi iii I.mid`, e os 136 arquivos que compartilham a
+assinatura mais comum estão todos na mesma pasta `02 - Db Major`. É o pacote
+rendendo a mesma progressão em doze tons e vários voicings: repetição por
+construção, não transcrição independente.
 
-A cobertura de camadas melhorou, e o MIXADO continua sendo um modo: com 4.075
-candidatos a recombinação ainda passa do limiar de encaixe em 97% das frases
-(`melody_smoke --span`). O modo degrada com elegância por construção — sem
-candidato acima do limiar em vinte tentativas, fica a harmonia que veio junto com
-a melodia —, e era exatamente isso que precisava ser medido depois do corte.
+Multiplicidade só indica fama quando cada arquivo é um envio independente. Num
+pack publicado por uma pessoa só, ela indica método.
 
-`data/bank-merged.json` e `data/bank-discover.json` continuam na pasta: o corte é
-uma troca de `data/bank.json`, e é reversível.
+**O que precisava ser checado no material novo era outra coisa:** se a "melodia"
+não seria apenas a nota de cima do acorde, já que são packs de progressão. Não
+é — 98,2% dos trechos têm melodia com desenho próprio, contra 1 trecho em 8.278
+onde ela coincide com o topo do acorde.
 
-**Material novo entra pelo mesmo caminho.** `tools/mine.py` extrai, `tools/pack.py`
-empacota. O corte de repetição ≥ 0,55 vale para material novo; o corpus de kits
-não passa por ele, porque já foi validado por ouvido e cortá-lo por uma medida
-jogaria fora coisa boa.
+### A duplicata é exata, e não parecida
+
+O banco guarda semitons **relativos à tônica** — é o que faz a frase soar igual
+em qualquer tom. E pack de progressão rende a mesma progressão nos doze tons
+(`Db - I V I IV.mid`, `Eb - I V I IV.mid`, …). Depois da normalização, os doze
+arquivos viram bytes idênticos.
+
+Sem a passada de deduplicação, 12.353 trechos eram **7.166 frases**: um terço
+eram cópias, e algumas apareciam **vinte e seis vezes**. Como o sorteio escolhe
+por posição, uma frase repetida 26 vezes tem 26 bilhetes — ela sai muito mais que
+as outras. Apertar GERAR devolvia a mesma coisa mais vezes do que deveria, que é
+o oposto do que acrescentar material deveria fazer.
+
+A comparação é por melodia, acordes, baixo e comprimento. Não entra `src`, `bpm`
+nem `conf`: duas cópias da mesma frase em andamentos diferentes continuam sendo a
+mesma frase para quem escuta.
+
+**Fica a primeira ocorrência**, e é por isso que a deduplicação acontece *depois*
+da ordem por procedência: uma frase que existe nos dois corpora é mantida na
+posição do corpus validado por ouvido.
+
+### Como material novo entra
+
+```bash
+python3 tools/mine.py ~/Downloads/PACK-1 ~/Downloads/PACK-2 \
+  --min-rep 0.55 --out data/bank-novos.json
+
+python3 tools/merge.py data/bank-kits+novos.json \
+  data/bank-trap.json data/bank-novos.json
+
+cp data/bank-kits+novos.json data/bank.json && python3 tools/pack.py
+```
+
+**Corte de repetição ≥ 0,55 só no material novo.** O corpus de kits não passa por
+ele: já foi validado por ouvido, e cortá-lo por uma medida jogaria fora coisa boa.
+
+**E quem foi validado por ouvido fica na frente.** Ordenar tudo junto por
+qualidade parecia óbvio e deu no contrário: o material novo pontua igual ou
+melhor, vai para a frente da lista e, com o sorteio enviesado (`biased()` eleva a
+sorte ao quadrado), empurra o corpus conhecido para a cauda. Com a ordem por
+procedência, ficam 57,4% / 42,6%.
+
+**Depois de mexer no banco, meça o MIXADO.** A recombinação tenta vinte
+candidatos e, se nenhum passa do limiar de encaixe, fica com a harmonia que veio
+junto — o modo vira ÚNICO em silêncio, sem erro nenhum. `melody_smoke --span`
+mede: hoje recombina em 95,0% das frases, encaixe médio 88%.
 
 ## O banco mora dentro do binário
 
@@ -549,7 +712,7 @@ jogaria fora coisa boa.
 lado do `.vst3` para alguém apagar. Dá para conferir no bundle instalado:
 
 ```bash
-python3 -c "d=open('$HOME/Library/Audio/Plug-Ins/VST3/melody.vst3/Contents/MacOS/melody','rb').read(); i=d.find(b'MFB2'); import struct; print(i, struct.unpack('<I', d[i+4:i+8])[0])"
+python3 -c "d=open('$HOME/Library/Audio/Plug-Ins/VST3/melodyc.vst3/Contents/MacOS/melodyc','rb').read(); i=d.find(b'MFB2'); import struct; print(i, struct.unpack('<I', d[i+4:i+8])[0])"
 ```
 
 A mágica `MFB2` aparece no offset 6.818.560 declarando 4.075 trechos, e o

@@ -142,6 +142,19 @@ public:
         chute inicial -- para uma frase de 160. */
     double tempo() const noexcept { return bpm.load (std::memory_order_relaxed); }
 
+    /** O TAMANHO DA JANELA VIAJA COM O PROJETO.
+
+        Mora no processador, e nao no editor, porque o editor e destruido toda
+        vez que a pessoa fecha a janela na DAW -- guardar nele faria a janela
+        voltar ao tamanho de fabrica a cada abertura, que e pior do que nao
+        deixar redimensionar. Daqui ele entra no estado salvo junto com a
+        semente e com o instrumento carregado.
+
+        Nao e parametro: tamanho de janela nao se automatiza nem se compara
+        entre presets, e como parametro apareceria na lista de automacao da DAW
+        no meio de tom e escala. */
+    int editorW = 0, editorH = 0;
+
     /** O instrumento do usuario, morando dentro do plugin. E o que faz tudo
         caber numa faixa so. */
     Rack rack;
@@ -196,6 +209,21 @@ private:
         note-off e fica presa para sempre. */
     double lastEnd = -1.0;
     bool wasRunning = false;
+
+    /** O RELOGIO DA FRASE, QUANDO O LACO DO HOST E MAIS CURTO QUE ELA.
+
+        No modo PAT do FL Studio, o padrao dura o comprimento do proprio
+        conteudo -- um compasso de bateria, por exemplo -- e o FL devolve a
+        posicao para zero a cada volta. Lendo a posicao crua, a frase de oito
+        compassos tocava so o primeiro, para sempre: foi o defeito relatado.
+
+        `phraseOffset` e quanto o host ja voltou para tras em lacos menores que
+        a frase; a posicao da frase e a do host MAIS isso, entao ela segue em
+        frente enquanto o host repete. `lastHostEnd` e o fim do bloco anterior
+        na conta do HOST, que e o que permite medir o tamanho da volta -- o
+        `lastEnd` acima ja esta na conta da frase. */
+    double phraseOffset = 0.0;
+    double lastHostEnd = -1.0;
 
     std::uint32_t seed = 1;
 

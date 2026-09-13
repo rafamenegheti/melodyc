@@ -91,20 +91,33 @@ juce_add_binary_data(melody_data
 # por MIDI -- que e o que permite tocar a frase num sampler do usuario em vez do
 # som interno.
 # ------------------------------------------------------------------------------
+# A COPIA AUTOMATICA E SO NO MAC.
+#
+# No Mac ela vai para ~/Library, que e do usuario. No Windows o destino e
+# C:\\Program Files\\Common Files\\VST3, que exige administrador: o build compila
+# tudo e falha no ultimo passo, com erro de permissao, a menos que o terminal
+# tenha sido aberto como administrador. Ali o .vst3 sai da pasta de build e e
+# copiado a mao.
+if(APPLE)
+  set(MELODY_COPY_AFTER_BUILD TRUE)
+else()
+  set(MELODY_COPY_AFTER_BUILD FALSE)
+endif()
+
 juce_add_plugin(melody
   COMPANY_NAME                "BeefUp808"
-  BUNDLE_ID                   com.BeefUp808.melody
+  BUNDLE_ID                   com.BeefUp808.melodyc
   PLUGIN_MANUFACTURER_CODE    Beef
   PLUGIN_CODE                 Mldy
   FORMATS                     VST3 AU
-  PRODUCT_NAME                "melody"
+  PRODUCT_NAME                "melodyc"
   DESCRIPTION                 "Gerador de melodia"
   IS_SYNTH                    TRUE
   NEEDS_MIDI_INPUT            TRUE
   NEEDS_MIDI_OUTPUT           TRUE
   IS_MIDI_EFFECT              FALSE
   EDITOR_WANTS_KEYBOARD_FOCUS FALSE
-  COPY_PLUGIN_AFTER_BUILD     TRUE)
+  COPY_PLUGIN_AFTER_BUILD     ${MELODY_COPY_AFTER_BUILD})
 
 juce_generate_juce_header(melody)
 
@@ -147,8 +160,8 @@ add_dependencies(melody melody_core_boundary)
 # `melody_smoke --load` carrega os bundles instalados num host de verdade e
 # mostra o que cada formato virou:
 #
-#   VST3       melody FX  ->  categoria "Fx", 0 entradas, 0 saidas, efeito midi NAO
-#   AudioUnit  melody FX  ->  categoria "MidiEffects",              efeito midi SIM
+#   VST3       melodyc FX  ->  categoria "Fx", 0 entradas, 0 saidas, efeito midi NAO
+#   AudioUnit  melodyc FX  ->  categoria "MidiEffects",              efeito midi SIM
 #
 # O AU tem o tipo `aumi`, que o Logic mostra no slot de MIDI FX. O VST3 nao tem
 # tipo equivalente: sai como efeito de AUDIO com zero barramentos, e o host
@@ -159,47 +172,52 @@ add_dependencies(melody melody_core_boundary)
 # Quem nao tem slot de MIDI FX usa a versao INSTRUMENTO com o MIDI roteado para
 # a faixa do instrumento. O README tem o caminho por DAW.
 # ------------------------------------------------------------------------------
-juce_add_plugin(melody_fx
-  COMPANY_NAME                "BeefUp808"
-  BUNDLE_ID                   com.BeefUp808.melodyfx
-  PLUGIN_MANUFACTURER_CODE    Beef
-  PLUGIN_CODE                 Mlfx
-  FORMATS                     AU
-  PRODUCT_NAME                "melody FX"
-  DESCRIPTION                 "Gerador de melodia (efeito MIDI)"
-  IS_SYNTH                    FALSE
-  NEEDS_MIDI_INPUT            TRUE
-  NEEDS_MIDI_OUTPUT           TRUE
-  IS_MIDI_EFFECT              TRUE
-  EDITOR_WANTS_KEYBOARD_FOCUS FALSE
-  COPY_PLUGIN_AFTER_BUILD     TRUE)
+# FORA DO MAC ELE NAO EXISTE: e so AU (ver acima), e AU e formato da Apple. No
+# Windows um juce_add_plugin sem nenhum formato valido derruba a configuracao
+# inteira -- inclusive o VST3 do instrumento, que nao tem nada a ver com ele.
+if(APPLE)
+  juce_add_plugin(melody_fx
+    COMPANY_NAME                "BeefUp808"
+    BUNDLE_ID                   com.BeefUp808.melodycfx
+    PLUGIN_MANUFACTURER_CODE    Beef
+    PLUGIN_CODE                 Mlfx
+    FORMATS                     AU
+    PRODUCT_NAME                "melodyc FX"
+    DESCRIPTION                 "Gerador de melodia (efeito MIDI)"
+    IS_SYNTH                    FALSE
+    NEEDS_MIDI_INPUT            TRUE
+    NEEDS_MIDI_OUTPUT           TRUE
+    IS_MIDI_EFFECT              TRUE
+    EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+    COPY_PLUGIN_AFTER_BUILD     ${MELODY_COPY_AFTER_BUILD})
 
-juce_generate_juce_header(melody_fx)
+  juce_generate_juce_header(melody_fx)
 
-target_sources(melody_fx PRIVATE
-  plugin/Processor.cpp
-  plugin/Editor.cpp
-  plugin/Rack.cpp)
+  target_sources(melody_fx PRIVATE
+    plugin/Processor.cpp
+    plugin/Editor.cpp
+    plugin/Rack.cpp)
 
-target_include_directories(melody_fx PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_include_directories(melody_fx PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# HOSPEDAR: o slot de instrumento carrega o VST3 ou o AU do usuario dentro do
-# plugin, e e o que faz tudo caber numa faixa so.
-target_compile_definitions(melody_fx PUBLIC
-  JUCE_WEB_BROWSER=0
-  JUCE_USE_CURL=0
-  JUCE_VST3_CAN_REPLACE_VST2=0
-  JUCE_REPORT_APP_USAGE=0
-  JUCE_PLUGINHOST_VST3=1
-  JUCE_PLUGINHOST_AU=1)
+  # HOSPEDAR: o slot de instrumento carrega o VST3 ou o AU do usuario dentro do
+  # plugin, e e o que faz tudo caber numa faixa so.
+  target_compile_definitions(melody_fx PUBLIC
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_VST3_CAN_REPLACE_VST2=0
+    JUCE_REPORT_APP_USAGE=0
+    JUCE_PLUGINHOST_VST3=1
+    JUCE_PLUGINHOST_AU=1)
 
-target_link_libraries(melody_fx
-  PRIVATE melody_core melody_data juce::juce_audio_utils
-  PUBLIC  juce::juce_recommended_config_flags
-          juce::juce_recommended_lto_flags
-          juce::juce_recommended_warning_flags)
+  target_link_libraries(melody_fx
+    PRIVATE melody_core melody_data juce::juce_audio_utils
+    PUBLIC  juce::juce_recommended_config_flags
+            juce::juce_recommended_lto_flags
+            juce::juce_recommended_warning_flags)
 
-add_dependencies(melody_fx melody_core_boundary)
+  add_dependencies(melody_fx melody_core_boundary)
+endif()
 
 # ------------------------------------------------------------------------------
 # 4. os testes

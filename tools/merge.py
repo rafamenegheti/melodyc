@@ -1,4 +1,4 @@
-"""Junta bancos e ordena por qualidade.
+"""Junta bancos, remove duplicata e ordena por qualidade.
 
   python3 tools/merge.py saida.json entrada1.json entrada2.json ...
 
@@ -16,9 +16,32 @@ plugin.
 Repeticao interna e um bom indicio, nao a verdade. O corpus de trap foi validado
 por ouvido; o material novo, so por medida. Quem foi validado por ouvido fica na
 frente.
+
+--------------------------------------------------------------------------------
+A DUPLICATA E EXATA, E NAO PARECIDA.
+
+O banco guarda semitons RELATIVOS A TONICA -- e o que faz a frase soar igual em
+qualquer tom. Pack de progressao rende a mesma progressao nos doze tons
+(`Db - I V I IV.mid`, `Eb - I V I IV.mid`, ...), e depois da normalizacao os doze
+arquivos viram bytes identicos.
+
+Sem esta passada, 12.353 trechos eram 7.166 frases: um terco eram copias, e
+algumas apareciam VINTE E SEIS vezes. Como o sorteio escolhe por posicao, uma
+frase repetida 26 vezes tem 26 bilhetes -- ela sai muito mais que as outras.
+Apertar GERAR devolvia a mesma coisa mais vezes do que deveria, que e o oposto
+do que acrescentar material deveria fazer.
+
+Compara melodia, acordes, baixo e comprimento. Nao compara `src`, `bpm` nem
+`conf`: duas copias da mesma frase com andamento diferente continuam sendo a
+mesma frase para quem escuta.
+
+FICA A PRIMEIRA OCORRENCIA, e e por isso que a deduplicacao acontece DEPOIS da
+ordem por procedencia: uma frase que existe nos dois corpora e mantida na
+posicao do corpus validado por ouvido, e nao na do material novo.
 """
 
 import json
+import math
 import os
 import sys
 
@@ -28,25 +51,49 @@ def quality(s):
             + (0.5 if s["chords"] else 0.0) + (0.3 if s["bass"] else 0.0))
 
 
+def identidade(s):
+    """O que faz duas frases serem a mesma para quem escuta."""
+    return json.dumps([s["melody"], s["chords"], s["bass"], s["bars"]],
+                      separators=(",", ":"))
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
         return
 
     out = sys.argv[1]
-    total = []
+    entradas = sys.argv[2:]
 
-    for path in sys.argv[2:]:
+    total = []
+    vistos = set()
+    mantidos = []          # quantos de cada entrada sobreviveram
+
+    for path in entradas:
         with open(path) as f:
             b = json.load(f)
 
         b.sort(key=lambda s: -quality(s))     # qualidade DENTRO da entrada
 
+        inicio = len(total)
+        repetidas = 0
+
+        for s in b:
+            k = identidade(s)
+            if k in vistos:
+                repetidas += 1
+                continue
+            vistos.add(k)
+            total.append(s)
+
+        novos = len(total) - inicio
+        mantidos.append(novos)
+
         r = sorted(s["rep"] for s in b)
         print(f"{os.path.basename(path):28s} {len(b):7d} trechos  "
-              f"repeticao mediana {r[len(r)//2]:.2f}  "
-              f"-> posicoes {len(total)}..{len(total)+len(b)-1}")
-        total += b
+              f"repeticao mediana {r[len(r)//2]:.2f}")
+        print(f"{'':28s} {novos:7d} unicos   {repetidas} duplicata(s)  "
+              f"-> posicoes {inicio}..{len(total)-1}")
 
     with open(out, "w") as f:
         json.dump(total, f)
@@ -56,16 +103,11 @@ def main():
 
     # Quanto de cada entrada o gerador vai sortear de fato. O vies e u^2, entao
     # o peso de um trecho na posicao i e a largura da fatia dele em sqrt.
-    import math
-
     n = len(total)
     faixa = 0
 
     print("\nquanto cada entrada leva do sorteio:")
-    for path in sys.argv[2:]:
-        with open(path) as f:
-            k = len(json.load(f))
-
+    for path, k in zip(entradas, mantidos):
         peso = math.sqrt((faixa + k) / n) - math.sqrt(faixa / n)
         print(f"  {os.path.basename(path):28s} {100*peso:5.1f}%")
         faixa += k

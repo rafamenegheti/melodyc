@@ -22,8 +22,24 @@ constexpr int gap = 24;
 constexpr int headerH = 40;
 constexpr int guestBarH = 34;
 
+// O TAMANHO DE FABRICA, E OS LIMITES.
+//
+// 1000x600 era tamanho FIXO. O roll e o miolo do plugin e ele estava preso numa
+// caixa de 460 pixels de altura: a nota, que hoje tem 17, iria a 31 numa janela
+// de 850. Esticar nao custa layout nenhum -- o `resized()` ja tira as barras de
+// cima e de baixo com altura fixa e da o resto ao roll --, faltava so destravar.
+//
+// O MINIMO EM LARGURA E O PROPRIO TAMANHO DE FABRICA, e isso nao e preguica:
+// a barra de cima soma 954 pixels de controle mais 40 de margem. Em 900 o
+// SOM INTERNO encostava no MENOR -- visto na captura, nao deduzido. A janela so
+// cresce, que e o que interessava. O maximo existe para ela nao virar tela
+// cheia por acidente num arrasto.
 constexpr int windowW = 1000;
 constexpr int windowH = 600;
+constexpr int minW = windowW;
+constexpr int minH = 500;
+constexpr int maxW = 2400;
+constexpr int maxH = 1600;
 constexpr int topBar = 54;
 constexpr int bottomBar = 62;
 
@@ -215,7 +231,56 @@ juce::File MidiDragButton::writeMidiFile() const
     return out;
 }
 
-/** A metade direita e um menu, e nao arrasto.
+//==============================================================================
+/** ENTREGA O ARQUIVO AO SISTEMA, UMA VEZ POR GESTO, E ANOTA O QUE ACONTECEU.
+
+    `mouseDrag` chega a cada pixel que o mouse anda. Sem trava, cada chegada
+    APAGAVA e reescrevia o arquivo e pedia outro arrasto -- enquanto a DAW podia
+    estar lendo exatamente aquele caminho. No WAV era pior: cada pixel
+    renderizava a frase inteira de novo. Foi relatado como "nao consigo arrastar
+    no FL Studio".
+
+    O LIMIAR DE 6 PIXELS separa clique de arrasto. Sem ele, um clique com a mao
+    tremendo virava arrasto -- e o arquivo era escrito para nada.
+
+    O REGISTRO EXISTE PORQUE O ARRASTO NAO SE TESTA SEM A DAW. Nao ha como
+    simular uma sessao de arrasto do macOS num caso de teste, e "nao funciona" nao
+    diz se o arquivo nao foi escrito, se o sistema recusou comecar o arrasto, ou
+    se a DAW recusou soltar. Cada tentativa vira uma linha em
+    ~/Library/Logs/melodyc/arrastar.log com essas tres respostas. */
+static void iniciaArrasto (juce::Component& origem, const juce::File& arquivo,
+                           const char* tipo)
+{
+    const bool escrito = arquivo.existsAsFile() && arquivo.getSize() > 0;
+
+    bool comecou = false;
+
+    if (escrito)
+        comecou = juce::DragAndDropContainer::performExternalDragDropOfFiles (
+            { arquivo.getFullPathName() }, false, &origem);
+
+   #if JUCE_MAC
+    const auto log = juce::File::getSpecialLocation (juce::File::userHomeDirectory)
+                       .getChildFile ("Library/Logs/melodyc/arrastar.log");
+   #else
+    const auto log = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+                       .getChildFile ("melodyc/arrastar.log");
+   #endif
+    log.getParentDirectory().createDirectory();
+
+    juce::String linha;
+    linha << juce::Time::getCurrentTime().toString (true, true, true, true)
+          << "  " << tipo
+          << "  host=" << juce::PluginHostType().getHostDescription()
+          << "  escrito=" << (escrito ? "sim" : "NAO")
+          << "  bytes=" << juce::String (arquivo.getSize())
+          << "  sistema_aceitou_arrasto=" << (comecou ? "sim" : "NAO")
+          << "  " << arquivo.getFullPathName() << "\n";
+
+    log.appendText (linha);
+}
+
+/** A metade direita e um menu, e nao arrasto./** A metade direita e um menu, e nao arrasto.
 
     Um botao so, com duas zonas: o corpo arrasta o arquivo, a seta escolhe como
     ele sai. Junto ou separado e uma decisao que so importa na hora de mandar a
@@ -245,6 +310,7 @@ void MidiDragButton::paintButton (juce::Graphics& g, bool over, bool down)
 
 void MidiDragButton::mouseDown (const juce::MouseEvent& e)
 {
+    arrastando = false;
     noMenu = e.position.x < (float) (getWidth() - arrowZone);
 
     if (noMenu)
@@ -279,16 +345,22 @@ void MidiDragButton::mouseDown (const juce::MouseEvent& e)
         });
 }
 
-void MidiDragButton::mouseDrag (const juce::MouseEvent&)
+void MidiDragButton::mouseDrag (const juce::MouseEvent& e)
 {
     if (! noMenu)
         return;                       // o gesto comecou na seta: nao e arrasto
 
-    const auto file = writeMidiFile();
+    if (arrastando || e.getDistanceFromDragStart() < 6)
+        return;
 
-    if (file.existsAsFile())
-        juce::DragAndDropContainer::performExternalDragDropOfFiles (
-            { file.getFullPathName() }, false, this);
+    arrastando = true;
+    iniciaArrasto (*this, writeMidiFile(), "MIDI");
+}
+
+void MidiDragButton::mouseUp (const juce::MouseEvent& e)
+{
+    arrastando = false;
+    ui::FlatButton::mouseUp (e);
 }
 
 //==============================================================================
@@ -332,13 +404,25 @@ juce::File WavDragButton::writeWavFile() const
     return out;
 }
 
-void WavDragButton::mouseDrag (const juce::MouseEvent&)
+void WavDragButton::mouseDown (const juce::MouseEvent& e)
 {
-    const auto file = writeWavFile();
+    arrastando = false;
+    ui::FlatButton::mouseDown (e);
+}
 
-    if (file.existsAsFile())
-        juce::DragAndDropContainer::performExternalDragDropOfFiles (
-            { file.getFullPathName() }, false, this);
+void WavDragButton::mouseDrag (const juce::MouseEvent& e)
+{
+    if (arrastando || e.getDistanceFromDragStart() < 6)
+        return;
+
+    arrastando = true;
+    iniciaArrasto (*this, writeWavFile(), "WAV");
+}
+
+void WavDragButton::mouseUp (const juce::MouseEvent& e)
+{
+    arrastando = false;
+    ui::FlatButton::mouseUp (e);
 }
 
 //==============================================================================
@@ -388,6 +472,7 @@ MelodyEditor::MelodyEditor (MelodyProcessor& p)
         proc.regenerate ((std::uint32_t) juce::Time::getHighResolutionTicks());
         roll.setPhrase (proc.livePhrase());
         updateInfo();
+        generate.pulse();
     };
 
     play.onClick = [this]
@@ -465,7 +550,22 @@ MelodyEditor::MelodyEditor (MelodyProcessor& p)
     roll.setPhrase (proc.livePhrase());
     updateInfo();
 
-    setSize (windowW, windowH);
+    // O TAMANHO SALVO E LIDO ANTES DE LIGAR O REDIMENSIONAMENTO.
+    //
+    // `setResizeLimits` chama `setBoundsConstrained` na hora, e o editor recem
+    // construido tem 0x0: ele sobe para o MINIMO, dispara `resized()`, e o
+    // `resized()` grava 900x480 em `proc.editorW`. Lendo depois, a janela abria
+    // sempre no minimo -- e o tamanho que o projeto guardou era destruido pela
+    // propria abertura, antes de alguem ver.
+    const int salvoW = proc.editorW;
+    const int salvoH = proc.editorH;
+
+    setResizable (true, true);
+    setResizeLimits (minW, minH, maxW, maxH);
+
+    setSize (salvoW > 0 ? juce::jlimit (minW, maxW, salvoW) : windowW,
+             salvoH > 0 ? juce::jlimit (minH, maxH, salvoH) : windowH);
+
     startTimerHz (30);
 }
 
@@ -611,11 +711,21 @@ void MelodyEditor::showSoundMenu()
 
             if (escolha == 3)
             {
-                chooser = std::make_unique<juce::FileChooser> (
-                    "Escolher instrumento",
+                // A pasta onde os plugins moram em cada sistema. No Windows o
+                // caminho de Mac viraria C:\\Users\\x\\Library, que nao existe, e o
+                // seletor abriria numa pasta qualquer.
+               #if JUCE_WINDOWS
+                const auto pastaDePlugins =
+                    juce::File::getSpecialLocation (juce::File::globalApplicationsDirectory)
+                        .getChildFile ("Common Files/VST3");
+               #else
+                const auto pastaDePlugins =
                     juce::File::getSpecialLocation (juce::File::userHomeDirectory)
-                        .getChildFile ("Library/Audio/Plug-Ins"),
-                    "*.vst3");
+                        .getChildFile ("Library/Audio/Plug-Ins");
+               #endif
+
+                chooser = std::make_unique<juce::FileChooser> (
+                    "Escolher instrumento", pastaDePlugins, "*.vst3");
 
                 chooser->launchAsync (juce::FileBrowserComponent::openMode
                                         | juce::FileBrowserComponent::canSelectFiles
@@ -839,6 +949,11 @@ void MelodyEditor::timerCallback()
     roll.setPlayhead (proc.playPosition(), proc.isMoving());
     roll.tick();
 
+    // O pulso do botao repinta pelo mesmo relogio do roll, e SO enquanto dura:
+    // fora disso a barra de baixo nao gasta um quadro.
+    if (generate.pulsing())
+        generate.repaint();
+
     updateInfo();
 
     refreshPlayButton();
@@ -883,6 +998,15 @@ void MelodyEditor::paint (juce::Graphics& g)
 void MelodyEditor::resized()
 {
     captions.clearQuick();
+
+    // O tamanho vai para o processador a cada arrasto, e de la para o projeto
+    // salvo. Escrever aqui e o unico jeito de pegar TODO redimensionamento --
+    // inclusive o que a DAW faz sozinha ao restaurar uma janela.
+    if (! showingGuest && getWidth() > 0 && getHeight() > 0)
+    {
+        proc.editorW = getWidth();
+        proc.editorH = getHeight();
+    }
 
     if (showingGuest)
     {

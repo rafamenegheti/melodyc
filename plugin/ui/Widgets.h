@@ -41,10 +41,46 @@ public:
         no que sobra e o unico jeito de o texto continuar parecendo centrado. */
     void setTextRightInset (int px) { rightInset = px; repaint(); }
 
+    /** UM PULSO CURTO NO CLIQUE.
+
+        O GERAR e apertado vinte vezes seguidas ate uma frase pegar, e o botao
+        respondia so com o realce de `down`, que some antes de o dedo sair. O
+        pulso da ao clique um eco que dura alem do toque -- e o unico sinal, na
+        barra de baixo, de que aquela frase acabou de nascer.
+
+        E um anel que abre e apaga, e nao uma sombra: sobre quase preto a sombra
+        vira mancha, e DropShadow rasteriza uma imagem borrada por quadro. */
+    void pulse() { pulsoEm = juce::Time::getMillisecondCounter(); repaint(); }
+
+    bool pulsing() const noexcept
+    {
+        return juce::Time::getMillisecondCounter() - pulsoEm < pulsoMs;
+    }
+
+    /** Congela o pulso num ponto, para a captura. Sem isto a foto do GERAR sai
+        sempre com o botao parado -- e um efeito que so existe em movimento e um
+        efeito que ninguem conferiu. */
+    void poseForShot (juce::uint32 msAtras)
+    {
+        pulsoEm = juce::Time::getMillisecondCounter() - msAtras;
+        repaint();
+    }
+
     void paintButton (juce::Graphics& g, bool over, bool down) override
     {
         auto b = getLocalBounds().toFloat();
         const float r = juce::jmin (radiusControl, b.getHeight() * 0.32f);
+
+        // O PULSO E PARA DENTRO.
+        //
+        // A primeira versao desenhava aneis com `b.expanded(...)`, e nao
+        // aparecia nada: o JUCE recorta o desenho nos limites do componente, e
+        // o anel inteiro caia fora. Um clarao no proprio preenchimento mais um
+        // aro que FECHA cabem na area do botao e leem melhor sobre o azul.
+        const float pulso = pulsing()
+            ? 1.0f - (float) (juce::Time::getMillisecondCounter() - pulsoEm)
+                       / (float) pulsoMs
+            : 0.0f;
 
         // O primario e o unico cheio de cor da janela. Dois botoes de destaque
         // e o mesmo que nenhum: o olho nao sabe onde comecar.
@@ -53,8 +89,22 @@ public:
         if (down)      f = primary ? f.darker (0.18f) : col::fillMax;
         else if (over) f = primary ? f.brighter (0.14f) : col::fillHi;
 
+        if (pulso > 0.0f)
+            f = f.interpolatedWith (juce::Colours::white, pulso * pulso * 0.55f);
+
         g.setColour (f);
         g.fillRoundedRectangle (b, r);
+
+        // O aro fecha de fora para dentro: e o que da direcao ao pulso, em vez
+        // de o botao so piscar.
+        if (pulso > 0.0f)
+        {
+            const float dentro = (1.0f - pulso) * b.getHeight() * 0.30f;
+
+            g.setColour (juce::Colours::white.withAlpha (pulso * pulso * 0.75f));
+            g.drawRoundedRectangle (b.reduced (dentro + 1.0f),
+                                    juce::jmax (1.0f, r - dentro * 0.5f), 1.6f);
+        }
 
         // Sem sombra: sobre quase preto ela vira mancha. O que separa o botao
         // do fundo e o fio de um pixel.
@@ -72,6 +122,11 @@ private:
     bool primary = false;
     int rightInset = 0;
     juce::Colour accent;
+
+    /** 260 ms: curto o bastante para nao atrapalhar quem gera em sequencia --
+        apertar de novo reinicia o pulso --, longo o bastante para se ver. */
+    juce::uint32 pulsoEm = 0;
+    static constexpr juce::uint32 pulsoMs = 260;
 };
 
 //==============================================================================

@@ -195,7 +195,15 @@ public:
         // Era "abre ate 24 semitons" para a nota nao ficar gorda demais. Depois
         // do encolhimento, semitom deixou de ser a unidade de altura -- abrir o
         // ambito so criaria vazio que o proprio encolhimento comeria de volta.
-        constexpr float minUnidades = 20.0f;
+        // O PISO DE LINHAS ACOMPANHA A ALTURA DA JANELA.
+        //
+        // Era 20 fixo, herdado de quando a janela tinha tamanho unico. Numa
+        // janela esticada isso dava nota de 40 pixels: deixa de ser piano roll e
+        // vira grafico de barras, e o teclado da lateral fica com tecla de
+        // dedao. Espaco a mais tem de virar CONTEXTO, e nao nota mais gorda --
+        // e o que um piano roll de verdade faz ao abrir.
+        constexpr float alturaIdeal = 26.0f;
+        const float minUnidades = juce::jmax (20.0f, area.getHeight() / alturaIdeal);
         const float unidadesCruas = (float) linhasReais + fatiaCostura * (float) costuras;
         const float rowH = area.getHeight() / juce::jmax (minUnidades, unidadesCruas);
 
@@ -542,6 +550,43 @@ public:
             g.setFont (uiFont (10.0f, false));
             g.drawText (status, regua.withTrimmedRight (8.0f),
                         juce::Justification::centredRight, false);
+        }
+
+        //----------------------------------------------------------------------
+        // A VARREDURA DA CHEGADA.
+        //
+        // GERAR e o botao que a pessoa aperta vinte vezes seguidas ate uma frase
+        // pegar, e a resposta era so o fade de 420 ms das notas -- correto e
+        // discreto demais para a acao central do plugin. A luz corre JUNTO com a
+        // frente de chegada, e nao no tempo bruto: as notas comecam a nascer em
+        // `0,55 * pos / steps` (ver `progressoDe`), entao a frente esta em
+        // `chegada / 0,55`. Fora de sincronia ela viraria um segundo efeito
+        // acontecendo por cima, em vez do mesmo.
+        //
+        // Gradiente sobre retangulo, como o halo e o rastro: aqui `shadowBlur`
+        // ou DropShadow rasterizariam a tela inteira a cada quadro.
+        if (chegada < 1.0f)
+        {
+            const float frente = juce::jlimit (0.0f, 1.0f, chegada / 0.55f);
+            const float x = area.getX() + frente * area.getWidth();
+            const float cauda = juce::jmin (110.0f, x - area.getX());
+
+            // Some no fim: a varredura anuncia a frase, e depois sai da frente.
+            const float forca = 1.0f - chegada * chegada;
+
+            if (cauda > 1.0f)
+            {
+                g.setGradientFill (juce::ColourGradient (
+                    juce::Colours::white.withAlpha (0.0f), x - cauda, 0.0f,
+                    juce::Colours::white.withAlpha (0.10f * forca), x, 0.0f, false));
+                g.fillRect (x - cauda, banda.getY(), cauda, banda.getHeight());
+            }
+
+            if (frente < 1.0f)
+            {
+                g.setColour (juce::Colours::white.withAlpha (0.30f * forca));
+                g.fillRect (x - 1.0f, banda.getY(), 2.0f, banda.getHeight());
+            }
         }
 
         if (headVisible)

@@ -35,6 +35,7 @@ public:
 
     void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
     void paintButton (juce::Graphics&, bool over, bool down) override;
 
     /** Publico porque o smoke precisa provar que o arquivo sai certo sem
@@ -48,6 +49,9 @@ private:
     MelodyProcessor& proc;
     juce::LookAndFeel* menuLook = nullptr;
     bool noMenu = false;
+
+    /** Ja entregou o arquivo ao sistema neste gesto. Ver `iniciaArrasto`. */
+    bool arrastando = false;
 };
 
 //==============================================================================
@@ -62,12 +66,15 @@ public:
     explicit WavDragButton (MelodyProcessor& p)
         : ui::FlatButton ("ARRASTAR WAV"), proc (p) {}
 
+    void mouseDown (const juce::MouseEvent&) override;
     void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
 
     juce::File writeWavFile() const;
 
 private:
     MelodyProcessor& proc;
+    bool arrastando = false;
 };
 
 //==============================================================================
@@ -96,6 +103,11 @@ public:
     void poseForShot (float progresso, double head, bool headOn, int grupo = -1)
     {
         roll.poseForShot (progresso, head, headOn);
+
+        // O pulso do botao comecou no MESMO instante da chegada da frase -- os
+        // dois sao a resposta ao mesmo clique. A captura tem de congelar os dois
+        // no mesmo ponto do tempo, senao mostra um estado que nunca existe.
+        generate.poseForShot ((juce::uint32) (juce::jlimit (0.0f, 1.0f, progresso) * 420.0f));
 
         juce::ignoreUnused (grupo);
     }
